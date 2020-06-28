@@ -8,10 +8,14 @@
 #define IP 66
 #define SERVER_PORT 80
 
+#define NRST 5
+#define BOOT0 4
+#define LED 2
+
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
-IPAddress ip(192, 168, 0, IP);
-IPAddress gateway(192, 168, 0, 1);
+IPAddress ip(192, 168, 178, IP);
+IPAddress gateway(192, 168, 178, 1);
 IPAddress subnet(255,255,255,0);
 AsyncWebServer server(SERVER_PORT);
 
@@ -81,7 +85,38 @@ void setupServer() {
   server.on("/api/version", HTTP_GET, [](AsyncWebServerRequest *request){
     sendVersion(request);
   });
+  server.on("/api/file/select", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(501);
+  });
+  server.on("/api/file/list", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(501);
+  });
+  server.on("/api/embedded/flash", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(501);
+  });
+  server.on("/api/embedded/restart", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(501);
+  });
   server.begin();
+}
+
+void setupGPIO() {
+  pinMode(BOOT0, OUTPUT);
+  pinMode(NRST, OUTPUT);
+  pinMode(LED, OUTPUT);
+
+  delay(100);
+  digitalWrite(BOOT0, HIGH);
+  delay(100);
+  digitalWrite(NRST, LOW);
+  digitalWrite(LED, LOW);
+  delay(50);
+  digitalWrite(NRST, HIGH);
+  delay(500);
+}
+
+void setupFileSystem() {
+  // SPIFFS.begin(true);
 }
 
 void setup() {
@@ -89,8 +124,11 @@ void setup() {
   Serial.println("Hello");
 
   WiFi.mode(WIFI_MODE_STA);
+  WiFi.config(ip, gateway, subnet);
+
   setupServer();
-  // WiFi.config(ip, gateway, subnet);
+  setupGPIO();
+  setupFileSystem();
   // put your setup code here, to run once:
 }
 
