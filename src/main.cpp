@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include "stm32ota.h"
 
 #define SERIAL_BAUD 115200
 #define WIFI_SSID "Mann im Mond"
@@ -74,6 +75,12 @@ void sendVersion(AsyncWebServerRequest *request) {
   request->send(200, "text/html", makePage("Firmware version", content));
 } 
 
+void targetVersion(AsyncWebServerRequest *request) {
+  char targetVersion = stm32Version();
+  String content = "<h1>Target firmware version</h1><h2>TODO</h2>";
+  request->send(200, "text/html", makePage("Firmware version", content));
+}
+
 void routeNotFound(AsyncWebServerRequest *request) {
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
@@ -92,6 +99,7 @@ void setupServer() {
     request->send(501);
   });
   server.on("/api/target/version", HTTP_GET, [](AsyncWebServerRequest *request){
+    targetVersion(request);
   });
   server.on("/api/target/flash", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
