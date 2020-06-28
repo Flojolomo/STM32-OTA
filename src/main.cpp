@@ -111,13 +111,65 @@ void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t i
 
   String localFileName = filename.startsWith("/") ? filename : "/" + filename;
   Serial.println(localFileName);
-  File file = SPIFFS.open(localFileName);
+  File file = SPIFFS.open(localFileName, FILE_WRITE);
   if (!file) {
+    Serial.println("Write failed");
     return;
   }
 
   file.write(data, len);
   file.close();
+  Serial.println("Write succeeded");
+
+  // Read file
+  Serial.println("Read file");
+  File readFile = SPIFFS.open(localFileName, FILE_READ);
+  if (!readFile) {
+    Serial.println("Read failed");
+    return;
+  }
+
+  while(readFile.available()){
+    Serial.write(readFile.read());
+  }
+  Serial.println("readFile end");
+  readFile.close();
+}
+
+void listFiles(AsyncWebServerRequest *request){
+  Serial.println("List files");
+  String FileList = "Bootloader Ver: ";
+  String Listcode;
+  char blversion = 0;
+  File root = SPIFFS.open("/");
+  Serial.println("File root is " + root.isDirectory() ? "a directory" : "a file");
+  if (!root.isDirectory()) {
+    Serial.println("Return after directory check");
+    return;
+  }
+  // FileList = "<br> MCU: ";
+  // blversion = stm32Version();
+  // FileList += String((blversion >> 4) & 0x0F) + "." + String(blversion & 0x0F) + "<br> MCU: ";
+  // FileList += STM32_CHIPNAME[stm32GetId()];
+  FileList += "<br><br> File: ";
+  File file = root.openNextFile();
+  Serial.println(file.name());
+  while (file)
+  {
+    Serial.print("Found file ");
+    Serial.println(file.name());
+    String FileName = file.name();
+    String FileSize = String(file.size());
+    int whsp = 6 - FileSize.length();
+    while (whsp-- > 0)
+    {
+      FileList += " ";
+    }
+    FileList +=  FileName + "   Size:" + FileSize;
+    file = root.openNextFile();
+  }
+  Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/up\">Upload BinFile</a></h2>";
+  request->send(200, "text/html", makePage("FileList", Listcode));
 }
 
 void routeNotFound(AsyncWebServerRequest *request) {
@@ -134,9 +186,7 @@ void setupServer() {
   server.on("/api/file/select", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
   });
-  server.on("/api/file/list", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(501);
-  });
+  server.on("/api/file/list", HTTP_GET, listFiles);
   server.on("/api/file/upload/select", HTTP_GET, [](AsyncWebServerRequest *request){
     char* content = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/api/file/upload/bin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
     request->send(200, "text/html", makePage("Select file", content));
@@ -187,7 +237,10 @@ void setupGPIO() {
 }
 
 void setupFileSystem() {
-  SPIFFS.begin(true);
+  if (!SPIFFS.begin(true)) {
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    return;
+  }  
 }
 
 void setup() {
