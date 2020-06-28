@@ -43,12 +43,14 @@ void setupWifi() {
 void setup() {
   Serial.begin(SERIAL_BAUD);
   Serial.println("Hello");
-  setupWifi();
   // put your setup code here, to run once:
 }
 
 void loop() {
   delay(1000);
   Serial.println("Still running ...");
+  if (WiFi.status() != WL_CONNECTED) {
+    setupWifi();
+  }
   // put your main code here, to run repeatedly:
 }
