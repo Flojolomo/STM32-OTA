@@ -34,18 +34,9 @@ String makePage(String title, String contents) {
 
 void setupWifi() {
   uint8_t dotCount = 0;
-  wl_status_t status = WL_DISCONNECTED;
-  
-  do {
-    switch (status) {
-      case WL_DISCONNECTED:
-      case WL_CONNECT_FAILED:
-        Serial.println("Reconnect");
-
+  wl_status_t status = WiFi.status();
         WiFi.begin(ssid, password);
-      default:
-        break;
-    }
+  do {
     delay(500);
     Serial.print("connecting .");
     for (uint8_t count = 0; count < dotCount; count++) {
@@ -81,6 +72,32 @@ void targetVersion(AsyncWebServerRequest *request) {
   request->send(200, "text/html", makePage("Firmware version", content));
 }
 
+void restartTarget(AsyncWebServerRequest *request) {
+  String content = "<h1>Target Reset</h1><h2>The target is currently resetted. Please wait</h2>";
+  request->send(200, "text/html", makePage("Target Reset", content));
+  digitalWrite(NRST, LOW);
+  delay(100);
+  digitalWrite(NRST, HIGH);
+}
+
+void targetRunMode(AsyncWebServerRequest *request) {
+  digitalWrite(BOOT0, LOW);
+  delay(100);
+  digitalWrite(NRST, LOW);
+  delay(100);
+  digitalWrite(NRST, HIGH);
+  request->send(200);
+}
+
+void targetFlashMode(AsyncWebServerRequest *request) {
+  digitalWrite(BOOT0, HIGH);
+  delay(100);
+  digitalWrite(NRST, LOW);
+  delay(100);
+  digitalWrite(NRST, HIGH);
+  request->send(200);
+}
+
 void routeNotFound(AsyncWebServerRequest *request) {
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
@@ -105,8 +122,18 @@ void setupServer() {
     request->send(501);
   });
   server.on("/api/target/restart", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(501);
+    restartTarget(request);
   });
+  server.on("/api/target/mode/flash", HTTP_GET, [](AsyncWebServerRequest *request){
+    targetFlashMode(request);
+  });
+  server.on("/api/target/mode/run", HTTP_GET, [](AsyncWebServerRequest *request){
+    targetRunMode(request);
+  });
+
+  
+  
+
   server.onNotFound([](AsyncWebServerRequest *request){
     routeNotFound(request);
   });
@@ -133,7 +160,7 @@ void setupFileSystem() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_BAUD, SERIAL_8E1);
   Serial.println("Hello");
 
   WiFi.mode(WIFI_MODE_STA);
@@ -147,7 +174,6 @@ void setup() {
 
 void loop() {
   delay(1000);
-  Serial.println("Still running ...");
   if (WiFi.status() != WL_CONNECTED) {
     setupWifi();
   }
