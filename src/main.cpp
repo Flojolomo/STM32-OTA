@@ -72,29 +72,28 @@ void targetVersion(AsyncWebServerRequest *request) {
   request->send(200, "text/html", makePage("Firmware version", content));
 }
 
-void restartTarget(AsyncWebServerRequest *request) {
-  String content = "<h1>Target Reset</h1><h2>The target is currently resetted. Please wait</h2>";
-  request->send(200, "text/html", makePage("Target Reset", content));
+void applyReset() {
   digitalWrite(NRST, LOW);
   delay(100);
   digitalWrite(NRST, HIGH);
+}
+void restartTarget(AsyncWebServerRequest *request) {
+  applyReset();
+  String content = "<h1>Target Reset</h1><h2>The target has been resetted.</h2>";
+  request->send(200, "text/html", makePage("Target Reset", content));
 }
 
 void targetRunMode(AsyncWebServerRequest *request) {
   digitalWrite(BOOT0, LOW);
   delay(100);
-  digitalWrite(NRST, LOW);
-  delay(100);
-  digitalWrite(NRST, HIGH);
+  applyReset();
   request->send(200);
 }
 
 void targetFlashMode(AsyncWebServerRequest *request) {
   digitalWrite(BOOT0, HIGH);
   delay(100);
-  digitalWrite(NRST, LOW);
-  delay(100);
-  digitalWrite(NRST, HIGH);
+  applyReset();
   request->send(200);
 }
 
