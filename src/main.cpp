@@ -91,13 +91,12 @@ void setupServer() {
   server.on("/api/file/list", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
   });
-  server.on("/api/embedded/version", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/api/target/version", HTTP_GET, [](AsyncWebServerRequest *request){
+  });
+  server.on("/api/target/flash", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
   });
-  server.on("/api/embedded/flash", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(501);
-  });
-  server.on("/api/embedded/restart", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/api/target/restart", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
   });
   server.onNotFound([](AsyncWebServerRequest *request){
