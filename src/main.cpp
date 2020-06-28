@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <SPIFFS.h>
 #include "stm32ota.h"
 
 #define SERIAL_BAUD 115200
@@ -97,6 +98,28 @@ void targetFlashMode(AsyncWebServerRequest *request) {
   request->send(200);
 }
 
+void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
+  if (final) {
+    String content = "<h1>Upload Complete</h1><h2><a style=\"color:white\" href=\"/api/file/upload/select\">Return </a></h2>";
+    request->send(200, "text/html", makePage("Upload complete", content));
+    return;
+  }
+
+  Serial.println("Upload file" + filename);
+  Serial.print("Size ");
+  Serial.println(len);
+
+  String localFileName = filename.startsWith("/") ? filename : "/" + filename;
+  Serial.println(localFileName);
+  File file = SPIFFS.open(localFileName);
+  if (!file) {
+    return;
+  }
+
+  file.write(data, len);
+  file.close();
+}
+
 void routeNotFound(AsyncWebServerRequest *request) {
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
@@ -114,6 +137,15 @@ void setupServer() {
   server.on("/api/file/list", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
   });
+  server.on("/api/file/upload/select", HTTP_GET, [](AsyncWebServerRequest *request){
+    char* content = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/api/file/upload/bin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
+    request->send(200, "text/html", makePage("Select file", content));
+  });
+  server.on("/api/file/upload/bin", HTTP_POST, [](AsyncWebServerRequest *request){
+    Serial.println("Upload file");
+    // request->send(200, "text/html", makePage("FileList", "<h1> Uploaded OK </h1><br><br><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>"));
+    request->send(200);
+  }, fileUpload);
   server.on("/api/target/version", HTTP_GET, [](AsyncWebServerRequest *request){
     targetVersion(request);
   });
@@ -155,7 +187,7 @@ void setupGPIO() {
 }
 
 void setupFileSystem() {
-  // SPIFFS.begin(true);
+  SPIFFS.begin(true);
 }
 
 void setup() {
