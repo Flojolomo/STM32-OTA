@@ -71,7 +71,7 @@ void redirectToVersion (AsyncWebServerRequest *request) {
 
 void sendVersion(AsyncWebServerRequest *request) {
   String content = "<h1>Firmeware version</h1><h2>0.1</h2>";
-  request->send(404, "text/html", makePage("Firmware version", content));
+  request->send(200, "text/html", makePage("Firmware version", content));
 } 
 
 void routeNotFound(AsyncWebServerRequest *request) {
