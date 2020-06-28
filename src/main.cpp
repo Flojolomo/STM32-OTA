@@ -74,8 +74,8 @@ void sendVersion(AsyncWebServerRequest *request) {
   request->send(404, "text/html", makePage("Firmware version", content));
 } 
 
-void routeNotFound() {
-  // server.send(404, "text/html", makePage("File Not found", "404"));
+void routeNotFound(AsyncWebServerRequest *request) {
+  request->send(404, "text/html", makePage("Route not found", "404"));
 }
 
 void setupServer() {
@@ -96,6 +96,9 @@ void setupServer() {
   });
   server.on("/api/embedded/restart", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(501);
+  });
+  server.onNotFound([](AsyncWebServerRequest *request){
+    routeNotFound(request);
   });
   server.begin();
 }
