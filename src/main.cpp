@@ -2,17 +2,21 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
+#include <AsyncJson.h>
+#include <ArduinoJson.h>
 #include "stm32ota.h"
 
-#define SERIAL_BAUD 115200
+#define CONSOLE 
+#define SERIAL_BAUD 115200 
 #define WIFI_SSID "Mann im Mond"
 #define WIFI_PASSWORD "WarumBinIchSoFroehlich??"
 #define IP 66
 #define SERVER_PORT 80
+#define FILENAME_PARAMETER "filename"
 
 #define NRST 5
 #define BOOT0 4
-#define LED 2
+#define BOOT1 2
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -21,6 +25,26 @@ IPAddress gateway(192, 168, 178, 1);
 IPAddress subnet(255,255,255,0);
 AsyncWebServer server(SERVER_PORT);
 
+String getFilenameFromRequestParams(AsyncWebServerRequest* request) {
+    int paramsCount = request->params();
+    int paramsIndex = 0;
+    AsyncWebParameter* parameter;
+    String filename = "\0";
+    while (paramsIndex < paramsCount) {
+        parameter = request->getParam(paramsIndex);
+        if (parameter->name() == FILENAME_PARAMETER) {
+          filename =  parameter->value();
+          break;
+        }
+      paramsIndex++;
+    }
+
+    if (!filename.startsWith("/")) {
+      filename = "/" + filename;
+    }
+          
+    return filename;
+}
 
 String makePage(String title, String contents) {
   String s = "<!DOCTYPE html><html><head>";
@@ -39,11 +63,8 @@ void setupWifi() {
         WiFi.begin(ssid, password);
   do {
     delay(500);
-    Serial.print("connecting .");
     for (uint8_t count = 0; count < dotCount; count++) {
-      Serial.print(".");
     }
-    Serial.println("");
 
     if (dotCount > 5) {
       dotCount = 0;
@@ -51,113 +72,84 @@ void setupWifi() {
       dotCount++;
     }
     status = WiFi.status();
-    Serial.print(status);
   } while (status != WL_CONNECTED);
- 
-  Serial.print("Connected - IP:");
-  Serial.println(WiFi.localIP());
 }
 
-void redirectToVersion (AsyncWebServerRequest *request) {
+void redirectToVersion (AsyncWebServerRequest *request){
   request->redirect("/api/version");
 }
 
-void sendVersion(AsyncWebServerRequest *request) {
+void sendVersion(AsyncWebServerRequest *request){
   String content = "<h1>Firmeware version</h1><h2>0.1</h2>";
   request->send(200, "text/html", makePage("Firmware version", content));
 } 
 
-void targetVersion(AsyncWebServerRequest *request) {
+void targetVersion(AsyncWebServerRequest *request){
   char targetVersion = stm32Version();
   String content = "<h1>Target firmware version</h1><h2>TODO</h2>";
   request->send(200, "text/html", makePage("Firmware version", content));
 }
 
-void applyReset() {
+void applyReset(){
   digitalWrite(NRST, LOW);
   delay(100);
   digitalWrite(NRST, HIGH);
 }
-void restartTarget(AsyncWebServerRequest *request) {
+void restartTarget(AsyncWebServerRequest *request){
   applyReset();
   String content = "<h1>Target Reset</h1><h2>The target has been resetted.</h2>";
   request->send(200, "text/html", makePage("Target Reset", content));
 }
 
-void targetRunMode(AsyncWebServerRequest *request) {
+void targetRunMode(AsyncWebServerRequest *request){
   digitalWrite(BOOT0, LOW);
-  delay(100);
-  applyReset();
+  digitalWrite(BOOT1, LOW);
+  // delay(100);
+  // applyReset();
   request->send(200);
 }
 
-void targetFlashMode(AsyncWebServerRequest *request) {
+void targetFlashMode(AsyncWebServerRequest *request){
   digitalWrite(BOOT0, HIGH);
-  delay(100);
-  applyReset();
+  digitalWrite(BOOT1, LOW);
+  // delay(100);
+  // applyReset();
+  // delay(500);
+  // Serial.write(STM32INIT);
+  // // TODO find out chip name
   request->send(200);
 }
 
-void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
+void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){
   if (final) {
     String content = "<h1>Upload Complete</h1><h2><a style=\"color:white\" href=\"/api/file/upload/select\">Return </a></h2>";
     request->send(200, "text/html", makePage("Upload complete", content));
     return;
   }
 
-  Serial.println("Upload file" + filename);
-  Serial.print("Size ");
-  Serial.println(len);
-
   String localFileName = filename.startsWith("/") ? filename : "/" + filename;
-  Serial.println(localFileName);
   File file = SPIFFS.open(localFileName, FILE_WRITE);
   if (!file) {
-    Serial.println("Write failed");
     return;
   }
 
   file.write(data, len);
   file.close();
-  Serial.println("Write succeeded");
-
-  // Read file
-  Serial.println("Read file");
-  File readFile = SPIFFS.open(localFileName, FILE_READ);
-  if (!readFile) {
-    Serial.println("Read failed");
-    return;
-  }
-
-  while(readFile.available()){
-    Serial.write(readFile.read());
-  }
-  Serial.println("readFile end");
-  readFile.close();
 }
 
 void listFiles(AsyncWebServerRequest *request){
-  Serial.println("List files");
   String FileList = "Bootloader Ver: ";
   String Listcode;
   char blversion = 0;
   File root = SPIFFS.open("/");
-  Serial.println("File root is " + root.isDirectory() ? "a directory" : "a file");
   if (!root.isDirectory()) {
-    Serial.println("Return after directory check");
     return;
   }
-  // FileList = "<br> MCU: ";
-  // blversion = stm32Version();
-  // FileList += String((blversion >> 4) & 0x0F) + "." + String(blversion & 0x0F) + "<br> MCU: ";
-  // FileList += STM32_CHIPNAME[stm32GetId()];
+
   FileList += "<br><br> File: ";
   File file = root.openNextFile();
-  Serial.println(file.name());
   while (file)
   {
-    Serial.print("Found file ");
-    Serial.println(file.name());
     String FileName = file.name();
     String FileSize = String(file.size());
     int whsp = 6 - FileSize.length();
@@ -172,65 +164,190 @@ void listFiles(AsyncWebServerRequest *request){
   request->send(200, "text/html", makePage("FileList", Listcode));
 }
 
-void routeNotFound(AsyncWebServerRequest *request) {
+void selectFile(AsyncWebServerRequest *request){
+  char* content = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/api/file/upload/bin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
+  request->send(200, "text/html", makePage("Select file", content));
+}
+
+void flashTarget(AsyncWebServerRequest *request) { 
+  String filename = getFilenameFromRequestParams(request);
+  int filenameLength = filename.length() + 1;
+  char filenameArray[filenameLength ];
+  filenameArray[filenameLength] = '\0';
+  filename.toCharArray(filenameArray, filenameLength);
+  File file = SPIFFS.open(filenameArray);
+  if (!file) {
+    request->send(404, "text/html", makePage("File not found", "File " + filename + " could not be found"));
+    file.close();
+    return;
+  }
+
+  uint8_t cflag, fnum = 256;
+  uint8_t binread[256];
+  String FileName, flashwr;
+  int bini = 0;
+  int lastbuf = 0;
+
+  bini = file.size() / 256;
+  lastbuf = file.size() % 256;
+
+  for (int i = 0; i < bini; i++) {
+    file.read(binread, 255);
+    stm32SendCommand(STM32WR);
+    while (!Serial.available()) ;
+    cflag = Serial.read();
+    if (cflag == STM32ACK) {
+      if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
+        if (stm32SendData(binread, 255) == STM32ACK) {
+          flashwr += ".";
+        } else {
+          flashwr += "\nIteration: " + String(i);
+        }
+    }
+      }
+   } 
+
+  file.close();
+
+  flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
+  request->send(200, "text/html", makePage("Read complete", flashwr));
+}
+
+void deleteFile(AsyncWebServerRequest *request){
+
+  String filename = String(getFilenameFromRequestParams(request));
+  File file = SPIFFS.open(filename);
+  if (!file) {
+    return request->send(404, "text/html", makePage("File " + filename + "not found", "404"));
+  }
+
+  SPIFFS.remove(filename);
+  request->send(200, "text/html", makePage("File deleted", "<h2>File " + filename + "has been deleted.<br><br><a style=\"color:white\" href=\"/api/file/list\">Return </a></h2>"));
+    
+}
+void clearStorage(AsyncWebServerRequest *request) {
+    File root = SPIFFS.open("/");
+    if (!root.isDirectory()) {
+      return;
+    }
+
+    String deletedFilesLog = "Deleted files:\n";
+    File file = root.openNextFile();
+    while (file) {
+      if (!file) {
+        continue;
+      }
+      deletedFilesLog += String(file.name()) + "\n";
+      SPIFFS.remove(file.name());
+      file = root.openNextFile();
+    }
+
+    request->send(200, "text/html", makePage("Storage cleared", "<h2> Deleted files:\n" + deletedFilesLog + "<br><br><a style=\"color:white\" href=\"/api/file/list\">Return </a></h2>"));
+}
+
+void routeNotFound(AsyncWebServerRequest *request){
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
 
-void setupServer() {
-  server.on("/",  HTTP_GET, [](AsyncWebServerRequest *request){
-    redirectToVersion(request);
-  });
-  server.on("/api/version", HTTP_GET, [](AsyncWebServerRequest *request){
-    sendVersion(request);
-  });
-  server.on("/api/file/select", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(501);
-  });
-  server.on("/api/file/list", HTTP_GET, listFiles);
-  server.on("/api/file/upload/select", HTTP_GET, [](AsyncWebServerRequest *request){
-    char* content = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/api/file/upload/bin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
-    request->send(200, "text/html", makePage("Select file", content));
-  });
-  server.on("/api/file/upload/bin", HTTP_POST, [](AsyncWebServerRequest *request){
-    Serial.println("Upload file");
-    // request->send(200, "text/html", makePage("FileList", "<h1> Uploaded OK </h1><br><br><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>"));
+void shutdownTarget(AsyncWebServerRequest *request) {
+  digitalWrite(NRST, LOW);
+  request->send(200);
+}
+
+void startupTarget(AsyncWebServerRequest *request) {
+  digitalWrite(NRST, HIGH);
+  request->send(200);
+}
+
+void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
+  JsonObject requestBody = json.as<JsonObject>();
+  if (!requestBody.containsKey("length") || !requestBody.containsKey("data")) {
+    request->send(500, "text/html", makePage("Missing key", "Missing key"));
+  }
+
+  const uint8_t length = requestBody["length"].as<uint8_t>();
+  uint8_t bytes[length];
+  JsonArray dataArray = requestBody["data"].as<JsonArray>();
+  uint8_t index = 0;
+  for(JsonVariant v : dataArray) {
+    bytes[index++] = (char) v.as<uint8_t>();
+  } 
+
+  Serial.write(bytes, length);
+  
+  
+  // char * p_Byte = dataArray.begin();
+  // for (uint8_t index = 0; index < length; index++) {
+    
+  // }
+  // Serial.printf("#### %d\n", length);
+  // serializeJson(requestBody["data"], Serial);
+  
+  // Serial.printf("####");
+  // serializeJson(bytes, Serial);
+  // // const std::vector<uint8_t> data = requestBody["data"].as<std::vector<uint8_t>>();
+  request->send(204);
+}
+
+void sendToTarget(uint8_t *data, size_t len, size_t index, size_t total) {
+  // StaticJsonBuffer<50> JSONBuffer; 
+  // JsonObject& parsed = JSONBuffer.parseObject(data);
+
+  // if (!parsed.success()) {   //Check for errors in parsing
+  //   Serial.println("Parsing failed");
+  //   return;
+  // }
+  
+  // if(!index){
+  //   Serial.printf("BodyStart: %u B\n", total);
+  // }
+  // for(size_t i=0; i<len; i++){
+  //   Serial.write(data[i]);
+  // }
+  // if(index + len == total){
+  //   Serial.printf("BodyEnd: %u B\n", total);
+  // }
+}
+
+void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  if (request->url() == "/api/target/send") {
+    sendToTarget(data,len,index,total);
     request->send(200);
-  }, fileUpload);
-  server.on("/api/target/version", HTTP_GET, [](AsyncWebServerRequest *request){
-    targetVersion(request);
-  });
-  server.on("/api/target/flash", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(501);
-  });
-  server.on("/api/target/restart", HTTP_GET, [](AsyncWebServerRequest *request){
-    restartTarget(request);
-  });
-  server.on("/api/target/mode/flash", HTTP_GET, [](AsyncWebServerRequest *request){
-    targetFlashMode(request);
-  });
-  server.on("/api/target/mode/run", HTTP_GET, [](AsyncWebServerRequest *request){
-    targetRunMode(request);
-  });
+    return;
+  }
+}
 
-  
-  
-
-  server.onNotFound([](AsyncWebServerRequest *request){
-    routeNotFound(request);
-  });
+void setupServer() {
+  server.on("/",  HTTP_GET, redirectToVersion);
+  server.on("/api/version", HTTP_GET, sendVersion);
+  server.on("/api/file/list", HTTP_GET, listFiles);
+  server.on("/api/file/select", HTTP_GET, selectFile);
+  server.on("/api/file/delete", HTTP_GET, deleteFile);
+  server.on("/api/file/clear", HTTP_GET, clearStorage);
+  server.on("/api/file/upload", HTTP_POST, [](AsyncWebServerRequest *request){}, fileUpload);
+  server.on("/api/target/version", HTTP_GET, targetVersion);
+  server.on("/api/target/flash", HTTP_GET, flashTarget);
+  server.on("/api/target/restart", HTTP_GET, restartTarget);
+  server.on("/api/target/mode/flash", HTTP_GET, targetFlashMode);
+  server.on("/api/target/mode/run", HTTP_GET, targetRunMode);
+  server.on("/api/target/shutdown", HTTP_GET, shutdownTarget);
+  server.on("/api/target/startup", HTTP_GET, startupTarget);
+  server.addHandler(new AsyncCallbackJsonWebHandler("/api/target/send", sendJsonToTarget) );
+  // server.onRequestBody(onRequestBody);
+  server.onNotFound(routeNotFound);
   server.begin();
 }
 
 void setupGPIO() {
   pinMode(BOOT0, OUTPUT);
+  pinMode(BOOT1, OUTPUT);
   pinMode(NRST, OUTPUT);
-  pinMode(LED, OUTPUT);
 
   delay(100);
   digitalWrite(BOOT0, HIGH);
+  digitalWrite(BOOT1, LOW);
   delay(100);
   digitalWrite(NRST, LOW);
-  digitalWrite(LED, LOW);
   delay(50);
   digitalWrite(NRST, HIGH);
   delay(500);
@@ -238,14 +355,12 @@ void setupGPIO() {
 
 void setupFileSystem() {
   if (!SPIFFS.begin(true)) {
-    Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }  
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD, SERIAL_8E1);
-  Serial.println("Hello");
 
   WiFi.mode(WIFI_MODE_STA);
   WiFi.config(ip, gateway, subnet);
