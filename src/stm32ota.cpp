@@ -9,7 +9,7 @@ void stm32SendCommand(unsigned char commd) {    // Tested
 }
 
 unsigned char stm32Erase() {     // Tested
-  stm32SendCommand(STM32ERASE);
+  stm32SendCommand(STM32ERASE); 
   while (!Serial.available());
   if (Serial.read() == STM32ACK)
   {
@@ -92,14 +92,14 @@ unsigned char stm32SendData(unsigned char * data, unsigned char wrlen) {     // 
 char stm32Version() {     // Tested
   unsigned char vsbuf[14];
   stm32SendCommand(STM32GET);
-  while (!Serial.available());
-  vsbuf[0] = Serial.read();
-  if (vsbuf[0] != STM32ACK)
-    return STM32ERR;
-  else {
-    Serial.readBytesUntil(STM32ACK, vsbuf, 14);
-    return vsbuf[1];
-  }
+  // while (!Serial.available());
+  // vsbuf[0] = Serial.read();
+  // if (vsbuf[0] != STM32ACK)
+  //   return STM32ERR;
+  // else {
+  //   Serial.readBytesUntil(STM32ACK, vsbuf, 14);
+  //   return vsbuf[1];
+  // }
 }
 
 unsigned char stm32GetId() {     // Tested
