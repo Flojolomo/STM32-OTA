@@ -25,6 +25,11 @@ IPAddress gateway(192, 168, 178, 1);
 IPAddress subnet(255,255,255,0);
 AsyncWebServer server(SERVER_PORT);
 
+void activateFlashMode() {
+  digitalWrite(BOOT0, HIGH);
+  digitalWrite(BOOT1, LOW);
+}
+
 String getFilenameFromRequestParams(AsyncWebServerRequest* request) {
     int paramsCount = request->params();
     int paramsIndex = 0;
@@ -92,26 +97,31 @@ void targetVersion(AsyncWebServerRequest *request){
 
 void applyReset(){
   digitalWrite(NRST, LOW);
-  delay(100);
+  delay(10);
   digitalWrite(NRST, HIGH);
 }
+
 void restartTarget(AsyncWebServerRequest *request){
   applyReset();
   String content = "<h1>Target Reset</h1><h2>The target has been resetted.</h2>";
   request->send(200, "text/html", makePage("Target Reset", content));
 }
 
-void targetRunMode(AsyncWebServerRequest *request){
+void runTarget() {
   digitalWrite(BOOT0, LOW);
-  digitalWrite(BOOT1, LOW);
+  digitalWrite(BOOT1, HIGH);
+}
+
+
+void targetRunMode(AsyncWebServerRequest *request){
+  runTarget();
   // delay(100);
   // applyReset();
   request->send(200);
 }
 
 void targetFlashMode(AsyncWebServerRequest *request){
-  digitalWrite(BOOT0, HIGH);
-  digitalWrite(BOOT1, LOW);
+  activateFlashMode();
   // delay(100);
   // applyReset();
   // delay(500);
@@ -169,6 +179,12 @@ void selectFile(AsyncWebServerRequest *request){
   request->send(200, "text/html", makePage("Select file", content));
 }
 
+boolean activateUart() {
+  Serial.write(STM32INIT);
+  while(!Serial.available());
+  return Serial.read() == STM32ACK;
+}
+
 void flashTarget(AsyncWebServerRequest *request) { 
   String filename = getFilenameFromRequestParams(request);
   int filenameLength = filename.length() + 1;
@@ -182,9 +198,67 @@ void flashTarget(AsyncWebServerRequest *request) {
     return;
   }
 
+  while(Serial.available()) {
+    Serial.read();
+  }
+
+  activateFlashMode();
+  applyReset();
+  delay(1000);
+  if (!activateUart()) {
+    request->send(500, "text/html", makePage("UART failed", "Failed to activate uart for flash"));
+    // file.close();
+    return;
+  }
+
+  
+  // Disable read protection
+  // stm32SendCommand(STM32UR);
+  // while(!Serial.available());
+  // if (Serial.read() != STM32ACK) {
+  //   request->send(500, "text/html", makePage("Read protection failed", "Disabling read protection failed"));
+  //   // file.close();
+  //   return;
+  // }
+
+  // String flashwr; 
+  // int size = file.size();
+  // int lastbuf = 0;
+  // uint8_t cflag, fnum = 0;
+  // uint8_t binread[256];
+  // int bini = size / 256;
+  // lastbuf = size % 256;
+
+  // flashwr = String(bini) + "-" + String(lastbuf) + "<br>";
+  //   for (int i = 0; i < bini; i++) {
+  //     file.read(binread, 256);
+  //     stm32SendCommand(STM32WR);
+  //     while (!Serial.available()) ;
+  //     cflag = Serial.read();
+  //     if (cflag == STM32ACK)
+  //       if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
+  //         if (stm32SendData(binread, 255) == STM32ACK)
+  //           flashwr += ".";
+  //         else flashwr = "Error";
+  //       }
+  //   }
+  //   file.read(binread, lastbuf);
+  //   stm32SendCommand(STM32WR);
+  //   while (!Serial.available()) ;
+  //   cflag = Serial.read();
+  //   if (cflag == STM32ACK)
+  //     if (stm32Address(STM32STADDR + (256 * bini)) == STM32ACK) {
+  //       if (stm32SendData(binread, lastbuf) == STM32ACK)
+  //         flashwr += "<br>Finished<br>";
+  //       else flashwr = "Error";
+  //     }
+  //   //flashwr += String(binread[0]) + "," + String(binread[lastbuf - 1]) + "<br>";
+
+// !!!
   uint8_t cflag, fnum = 256;
   uint8_t binread[256];
   String FileName, flashwr;
+  boolean failure = false;
   int bini = 0;
   int lastbuf = 0;
 
@@ -197,20 +271,65 @@ void flashTarget(AsyncWebServerRequest *request) {
     while (!Serial.available()) ;
     cflag = Serial.read();
     if (cflag == STM32ACK) {
-      if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
-        if (stm32SendData(binread, 255) == STM32ACK) {
+      cflag = stm32Address(STM32STADDR + (256 * i));
+      if (cflag == STM32ACK) {
+        cflag = stm32SendData(binread, 255);
+        if (cflag == STM32ACK) {
           flashwr += ".";
-        } else {
-          flashwr += "\nIteration: " + String(i);
+        } else if (cflag == STM32NACK) {
+          "\nReceived NACK in iteration" + String(i);
+          failure = true;
+          break;
         }
-    }
+      } else if (cflag == STM32NACK) {
+        "\nReceived NACK in iteration" + String(i);
+        failure = true;
+        break;
       }
-   } 
+    } else if (cflag == STM32NACK) {
+      "\nReceived NACK in iteration" + String(i);
+      failure = true;
+      break;
+    }
+  } 
+
+  if (failure) {
+    flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
+    request->send(500, "text/html", makePage("Flash failed", flashwr));
+    file.close();
+    return;
+  }
+
+  file.read(binread, lastbuf);
+  stm32SendCommand(STM32WR);
+  while (!Serial.available()) ;
+  cflag = Serial.read();
+  if (cflag == STM32ACK){
+    cflag = stm32Address(STM32STADDR + (256 * bini));
+    if (cflag == STM32ACK) {
+      if (stm32SendData(binread, lastbuf) == STM32ACK)
+        flashwr += "<br>Finished<br>";
+      else {
+        flashwr = "Error";
+        failure = true;
+      }
+    } else {
+      "\nReceived NACK in last iteration";
+      failure = true;
+    }
+  }
 
   file.close();
 
+  if (failure) {
+    flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
+    request->send(500, "text/html", makePage("Flash failed", flashwr));
+    return;
+  }
+
   flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
   request->send(200, "text/html", makePage("Read complete", flashwr));
+  // request->send(200);
 }
 
 void deleteFile(AsyncWebServerRequest *request){
@@ -249,17 +368,25 @@ void routeNotFound(AsyncWebServerRequest *request){
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
 
-void shutdownTarget(AsyncWebServerRequest *request) {
+void shutdown() {
   digitalWrite(NRST, LOW);
+}
+
+void shutdownTarget(AsyncWebServerRequest *request) {
+  shutdown();
   request->send(200);
+}
+
+void startup(){
+  digitalWrite(NRST, HIGH);
 }
 
 void startupTarget(AsyncWebServerRequest *request) {
-  digitalWrite(NRST, HIGH);
+  startup();
   request->send(200);
 }
 
-void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
+boolean sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
   JsonObject requestBody = json.as<JsonObject>();
   if (!requestBody.containsKey("length") || !requestBody.containsKey("data")) {
     request->send(500, "text/html", makePage("Missing key", "Missing key"));
@@ -274,6 +401,8 @@ void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
   } 
 
   Serial.write(bytes, length);
+  while (!Serial.available());
+  request->send(Serial.read() == STM32ACK ? 204 : 500);
   
   
   // char * p_Byte = dataArray.begin();
@@ -286,7 +415,6 @@ void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
   // Serial.printf("####");
   // serializeJson(bytes, Serial);
   // // const std::vector<uint8_t> data = requestBody["data"].as<std::vector<uint8_t>>();
-  request->send(204);
 }
 
 void sendToTarget(uint8_t *data, size_t len, size_t index, size_t total) {
@@ -311,7 +439,6 @@ void sendToTarget(uint8_t *data, size_t len, size_t index, size_t total) {
 
 void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
   if (request->url() == "/api/target/send") {
-    sendToTarget(data,len,index,total);
     request->send(200);
     return;
   }
@@ -344,8 +471,7 @@ void setupGPIO() {
   pinMode(NRST, OUTPUT);
 
   delay(100);
-  digitalWrite(BOOT0, HIGH);
-  digitalWrite(BOOT1, LOW);
+  runTarget();
   delay(100);
   digitalWrite(NRST, LOW);
   delay(50);
@@ -374,6 +500,7 @@ void setup() {
 void loop() {
   delay(1000);
   if (WiFi.status() != WL_CONNECTED) {
+    shutdown();
     setupWifi();
   }
   // put your main code here, to run repeatedly:
