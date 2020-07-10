@@ -1,22 +1,66 @@
-#include <Arduino.h>
+/*
+*   
+*    Copyright (C) 2017  CS.NOL  https://github.com/csnol/STM32-OTA
+*
+*    This program is free software: you can redistribute it and/or modify
+*    it under the terms of the GNU General Public License as published by
+*    the Free Software Foundation, either version 3 of the License, 
+*    and You have to keep below webserver code 
+*    "<h2>Version 1.0 by <a style=\"color:white\" href=\"https://github.com/csnol/STM32-OTA\">CSNOL" 
+*    in your sketch.
+*
+*    This program is distributed in the hope that it will be useful,
+*    but WITHOUT ANY WARRANTY; without even the implied warranty of
+*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*    GNU General Public License for more details.
+*
+*    You should have received a copy of the GNU General Public License
+*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*    
+*   It is assumed that the STM32 MCU is connected to the following pins with NodeMCU or ESP8266/8285. 
+*   Tested and supported MCU : STM32F03xF/K/C/，F05xF/K/C,F10xx8/B
+*
+*   连接ESP8266模块和STM32系列MCU.    Connect ESP8266 to STM32 MCU
+*
+*   ESP8266/8285 Pin       STM32 MCU      NodeMCU Pin(ESP8266 based)
+*   RXD                  	PA9             RXD
+*   TXD                  	PA10            TXD
+*   Pin4                 	BOOT0           D2
+*   Pin5                 	RST             D1
+*   Vcc                  	3.3V            3.3V
+*   GND                  	GND             GND
+*   En -> 10K -> 3.3V
+*
+*/
+
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
-#include <AsyncJson.h>
-#include <ArduinoJson.h>
+// #include "spiffs/spiffs.h"            // Delete for ESP8266-Arduino 2.4.2 version
+// #include <FS.h>
+// #include <ESP8266mDNS.h>
 #include "stm32ota.h"
 
-#define CONSOLE 
 #define SERIAL_BAUD 115200 
 #define WIFI_SSID "Mann im Mond"
 #define WIFI_PASSWORD "WarumBinIchSoFroehlich??"
 #define IP 66
 #define SERVER_PORT 80
-#define FILENAME_PARAMETER "filename"
+
+const String STM32_CHIPNAME[8] = {
+  "Unknown Chip",
+  "STM32F03xx4/6",
+  "STM32F030x8/05x",
+  "STM32F030xC",
+  "STM32F103x4/6",
+  "STM32F103x8/B",
+  "STM32F103xC/D/E",
+  "STM32F105/107"
+};
 
 #define NRST 5
 #define BOOT0 4
-#define BOOT1 2
+#define LED 2
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -25,26 +69,15 @@ IPAddress gateway(192, 168, 178, 1);
 IPAddress subnet(255,255,255,0);
 AsyncWebServer server(SERVER_PORT);
 
-String getFilenameFromRequestParams(AsyncWebServerRequest* request) {
-    int paramsCount = request->params();
-    int paramsIndex = 0;
-    AsyncWebParameter* parameter;
-    String filename = "\0";
-    while (paramsIndex < paramsCount) {
-        parameter = request->getParam(paramsIndex);
-        if (parameter->name() == FILENAME_PARAMETER) {
-          filename =  parameter->value();
-          break;
-        }
-      paramsIndex++;
-    }
-
-    if (!filename.startsWith("/")) {
-      filename = "/" + filename;
-    }
-          
-    return filename;
-}
+const char* serverIndex = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/upload' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
+File fsUploadFile;
+uint8_t binread[256];
+int bini = 0;
+String stringtmp;
+int rdtmp;
+int stm32ver;
+bool initflag = 0;
+bool Runflag = 0;
 
 String makePage(String title, String contents) {
   String s = "<!DOCTYPE html><html><head>";
@@ -55,6 +88,172 @@ String makePage(String title, String contents) {
   s += contents;
   s += "</body></html>";
   return s;
+}
+
+void handleListFiles(AsyncWebServerRequest *request)
+{
+  String FileList = "Bootloader Ver: ";
+  String Listcode;
+  char blversion = 0;
+  File root = SPIFFS.open("/");
+  if (!root.isDirectory()) {
+    return;
+  }
+
+  blversion = stm32Version();
+  FileList += String((blversion >> 4) & 0x0F) + "." + String(blversion & 0x0F) + "<br> MCU: ";
+  FileList += STM32_CHIPNAME[stm32GetId()];
+  FileList += "<br><br> File: ";
+  File file = root.openNextFile();
+  while (file)
+  {
+    String FileName = file.name();
+    String FileSize = String(file.size());
+    int whsp = 6 - FileSize.length();
+    while (whsp-- > 0)
+    {
+      FileList += " ";
+    }
+    FileList +=  FileName + "   Size:" + FileSize;
+    file = root.openNextFile();
+  }
+  Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/up\">Upload BinFile</a></h2>";
+  request->send(200, "text/html", makePage("FileList", Listcode));
+}
+
+
+void handleFileDelete(AsyncWebServerRequest *request) {
+  int binhigh = 0;
+  String FileList = "File: ";
+  String FName;
+  File root = SPIFFS.open("/");
+  if (!root || !root.isDirectory()) {
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    FName = file.name();
+  }
+  FileList += FName;
+  if (SPIFFS.exists(FName)) {
+    request->send(200, "text/html", makePage("Deleted", "<h2>" + FileList + " be deleted!<br><br><a style=\"color:white\" href=\"/list\">Return </a></h2>"));
+    SPIFFS.remove(FName);
+  }
+  else
+    return request->send(404, "text/html", makePage("File Not found", "404"));
+}
+
+void handleFlash(AsyncWebServerRequest *request)
+{
+  String FileName, flashwr;
+  int lastbuf = 0;
+  uint8_t cflag, fnum = 256;
+  File root = SPIFFS.open("/");
+  if (!root || !root.isDirectory()) {
+    return;
+  }
+
+  File file = root.openNextFile(FILE_READ);
+  while (file)
+  {
+    FileName = file.name();
+  }
+  fsUploadFile = SPIFFS.open(FileName, "r");
+  if (fsUploadFile) {
+    bini = fsUploadFile.size() / 256;
+    lastbuf = fsUploadFile.size() % 256;
+    flashwr = String(bini) + "-" + String(lastbuf) + "<br>";
+    for (int i = 0; i < bini; i++) {
+      fsUploadFile.read(binread, 256);
+      stm32SendCommand(STM32WR);
+      while (!Serial.available()) ;
+      cflag = Serial.read();
+      if (cflag == STM32ACK)
+        if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
+          if (stm32SendData(binread, 255) == STM32ACK)
+            flashwr += ".";
+          else flashwr = "Error";
+        }
+    }
+    fsUploadFile.read(binread, lastbuf);
+    stm32SendCommand(STM32WR);
+    while (!Serial.available()) ;
+    cflag = Serial.read();
+    if (cflag == STM32ACK)
+      if (stm32Address(STM32STADDR + (256 * bini)) == STM32ACK) {
+        if (stm32SendData(binread, lastbuf) == STM32ACK)
+          flashwr += "<br>Finished<br>";
+        else flashwr = "Error";
+      }
+    //flashwr += String(binread[0]) + "," + String(binread[lastbuf - 1]) + "<br>";
+    fsUploadFile.close();
+    String flashhtml = "<h1>Programming</h1><h2>" + flashwr +  "<br><br><a style=\"color:white\" href=\"/up\">Upload STM32 BinFile</a><br><br><a style=\"color:white\" href=\"/list\">List STM32 BinFile</a></h2>";
+    request->send(200, "text/html", makePage("Flash Page", flashhtml));
+  }
+}
+
+
+void handleFileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final)
+{
+  String name = filename;
+  if (index == 0) {
+    if (!filename.startsWith("/")) name = "/" + name; 
+    fsUploadFile = SPIFFS.open(filename, "w");
+  }
+
+  if(!fsUploadFile) {
+    return;
+  }
+
+  fsUploadFile.write(data, len);
+
+  if (final && fsUploadFile) {
+    fsUploadFile.close();
+    return;
+  }
+
+  // HTTPUpload& upload = server.upload();
+  // if (upload.status == UPLOAD_FILE_START) {
+  //   String filename = upload.filename;
+  //   if (!filename.startsWith("/")) filename = "/" + filename;
+  //   fsUploadFile = SPIFFS.open(filename, "w");
+  //   filename = String();
+  // } else if (upload.status == UPLOAD_FILE_WRITE) {
+  //   if (fsUploadFile)
+  //     fsUploadFile.write(upload.buf, upload.currentSize);
+  // } else if (upload.status == UPLOAD_FILE_END) {
+  //   if (fsUploadFile)
+  //     fsUploadFile.close();
+  // }
+}
+
+void FlashMode()  {    //Tested  Change to flashmode
+  digitalWrite(BOOT0, HIGH);
+  delay(100);
+  digitalWrite(NRST, LOW);
+  digitalWrite(LED, LOW);
+  delay(50);
+  digitalWrite(NRST, HIGH);
+  delay(200);
+  for ( int i = 0; i < 3; i++) {
+    digitalWrite(LED, !digitalRead(LED));
+    delay(100);
+  }
+}
+
+void RunMode()  {    //Tested  Change to runmode
+  digitalWrite(BOOT0, LOW);
+  delay(100);
+  digitalWrite(NRST, LOW);
+  digitalWrite(LED, LOW);
+  delay(50);
+  digitalWrite(NRST, HIGH);
+  delay(200);
+  for ( int i = 0; i < 3; i++) {
+    digitalWrite(LED, !digitalRead(LED));
+    delay(100);
+  }
 }
 
 void setupWifi() {
@@ -75,282 +274,97 @@ void setupWifi() {
   } while (status != WL_CONNECTED);
 }
 
-void redirectToVersion (AsyncWebServerRequest *request){
-  request->redirect("/api/version");
-}
-
-void sendVersion(AsyncWebServerRequest *request){
-  String content = "<h1>Firmeware version</h1><h2>0.1</h2>";
-  request->send(200, "text/html", makePage("Firmware version", content));
-} 
-
-void targetVersion(AsyncWebServerRequest *request){
-  char targetVersion = stm32Version();
-  String content = "<h1>Target firmware version</h1><h2>TODO</h2>";
-  request->send(200, "text/html", makePage("Firmware version", content));
-}
-
-void applyReset(){
-  digitalWrite(NRST, LOW);
-  delay(100);
-  digitalWrite(NRST, HIGH);
-}
-void restartTarget(AsyncWebServerRequest *request){
-  applyReset();
-  String content = "<h1>Target Reset</h1><h2>The target has been resetted.</h2>";
-  request->send(200, "text/html", makePage("Target Reset", content));
-}
-
-void targetRunMode(AsyncWebServerRequest *request){
-  digitalWrite(BOOT0, LOW);
-  digitalWrite(BOOT1, LOW);
-  // delay(100);
-  // applyReset();
-  request->send(200);
-}
-
-void targetFlashMode(AsyncWebServerRequest *request){
-  digitalWrite(BOOT0, HIGH);
-  digitalWrite(BOOT1, LOW);
-  // delay(100);
-  // applyReset();
-  // delay(500);
-  // Serial.write(STM32INIT);
-  // // TODO find out chip name
-  request->send(200);
-}
-
-void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){
-  if (final) {
-    String content = "<h1>Upload Complete</h1><h2><a style=\"color:white\" href=\"/api/file/upload/select\">Return </a></h2>";
-    request->send(200, "text/html", makePage("Upload complete", content));
-    return;
-  }
-
-  String localFileName = filename.startsWith("/") ? filename : "/" + filename;
-  File file = SPIFFS.open(localFileName, FILE_WRITE);
-  if (!file) {
-    return;
-  }
-
-  file.write(data, len);
-  file.close();
-}
-
-void listFiles(AsyncWebServerRequest *request){
-  String FileList = "Bootloader Ver: ";
-  String Listcode;
-  char blversion = 0;
-  File root = SPIFFS.open("/");
-  if (!root.isDirectory()) {
-    return;
-  }
-
-  FileList += "<br><br> File: ";
-  File file = root.openNextFile();
-  while (file)
-  {
-    String FileName = file.name();
-    String FileSize = String(file.size());
-    int whsp = 6 - FileSize.length();
-    while (whsp-- > 0)
-    {
-      FileList += " ";
-    }
-    FileList +=  FileName + "   Size:" + FileSize;
-    file = root.openNextFile();
-  }
-  Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/up\">Upload BinFile</a></h2>";
-  request->send(200, "text/html", makePage("FileList", Listcode));
-}
-
-void selectFile(AsyncWebServerRequest *request){
-  char* content = "<h1>Upload STM32 BinFile</h1><h2><br><br><form method='POST' action='/api/file/upload/bin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Upload'></form></h2>";
-  request->send(200, "text/html", makePage("Select file", content));
-}
-
-void flashTarget(AsyncWebServerRequest *request) { 
-  String filename = getFilenameFromRequestParams(request);
-  int filenameLength = filename.length() + 1;
-  char filenameArray[filenameLength ];
-  filenameArray[filenameLength] = '\0';
-  filename.toCharArray(filenameArray, filenameLength);
-  File file = SPIFFS.open(filenameArray);
-  if (!file) {
-    request->send(404, "text/html", makePage("File not found", "File " + filename + " could not be found"));
-    file.close();
-    return;
-  }
-
-  uint8_t cflag, fnum = 256;
-  uint8_t binread[256];
-  String FileName, flashwr;
-  int bini = 0;
-  int lastbuf = 0;
-
-  bini = file.size() / 256;
-  lastbuf = file.size() % 256;
-
-  for (int i = 0; i < bini; i++) {
-    file.read(binread, 255);
-    stm32SendCommand(STM32WR);
-    while (!Serial.available()) ;
-    cflag = Serial.read();
-    if (cflag == STM32ACK) {
-      if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
-        if (stm32SendData(binread, 255) == STM32ACK) {
-          flashwr += ".";
-        } else {
-          flashwr += "\nIteration: " + String(i);
-        }
-    }
-      }
-   } 
-
-  file.close();
-
-  flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
-  request->send(200, "text/html", makePage("Read complete", flashwr));
-}
-
-void deleteFile(AsyncWebServerRequest *request){
-
-  String filename = String(getFilenameFromRequestParams(request));
-  File file = SPIFFS.open(filename);
-  if (!file) {
-    return request->send(404, "text/html", makePage("File " + filename + "not found", "404"));
-  }
-
-  SPIFFS.remove(filename);
-  request->send(200, "text/html", makePage("File deleted", "<h2>File " + filename + "has been deleted.<br><br><a style=\"color:white\" href=\"/api/file/list\">Return </a></h2>"));
-    
-}
-void clearStorage(AsyncWebServerRequest *request) {
-    File root = SPIFFS.open("/");
-    if (!root.isDirectory()) {
-      return;
-    }
-
-    String deletedFilesLog = "Deleted files:\n";
-    File file = root.openNextFile();
-    while (file) {
-      if (!file) {
-        continue;
-      }
-      deletedFilesLog += String(file.name()) + "\n";
-      SPIFFS.remove(file.name());
-      file = root.openNextFile();
-    }
-
-    request->send(200, "text/html", makePage("Storage cleared", "<h2> Deleted files:\n" + deletedFilesLog + "<br><br><a style=\"color:white\" href=\"/api/file/list\">Return </a></h2>"));
-}
-
-void routeNotFound(AsyncWebServerRequest *request){
-  request->send(404, "text/html", makePage("Route not found", "404"));
-}
-
-void shutdownTarget(AsyncWebServerRequest *request) {
-  digitalWrite(NRST, LOW);
-  request->send(200);
-}
-
-void startupTarget(AsyncWebServerRequest *request) {
-  digitalWrite(NRST, HIGH);
-  request->send(200);
-}
-
-void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
-  JsonObject requestBody = json.as<JsonObject>();
-  if (!requestBody.containsKey("length") || !requestBody.containsKey("data")) {
-    request->send(500, "text/html", makePage("Missing key", "Missing key"));
-  }
-
-  const uint8_t length = requestBody["length"].as<uint8_t>();
-  uint8_t bytes[length];
-  JsonArray dataArray = requestBody["data"].as<JsonArray>();
-  uint8_t index = 0;
-  for(JsonVariant v : dataArray) {
-    bytes[index++] = (char) v.as<uint8_t>();
-  } 
-
-  Serial.write(bytes, length);
-  
-  
-  // char * p_Byte = dataArray.begin();
-  // for (uint8_t index = 0; index < length; index++) {
-    
-  // }
-  // Serial.printf("#### %d\n", length);
-  // serializeJson(requestBody["data"], Serial);
-  
-  // Serial.printf("####");
-  // serializeJson(bytes, Serial);
-  // // const std::vector<uint8_t> data = requestBody["data"].as<std::vector<uint8_t>>();
-  request->send(204);
-}
-
-void sendToTarget(uint8_t *data, size_t len, size_t index, size_t total) {
-  // StaticJsonBuffer<50> JSONBuffer; 
-  // JsonObject& parsed = JSONBuffer.parseObject(data);
-
-  // if (!parsed.success()) {   //Check for errors in parsing
-  //   Serial.println("Parsing failed");
-  //   return;
-  // }
-  
-  // if(!index){
-  //   Serial.printf("BodyStart: %u B\n", total);
-  // }
-  // for(size_t i=0; i<len; i++){
-  //   Serial.write(data[i]);
-  // }
-  // if(index + len == total){
-  //   Serial.printf("BodyEnd: %u B\n", total);
-  // }
-}
-
-void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-  if (request->url() == "/api/target/send") {
-    sendToTarget(data,len,index,total);
-    request->send(200);
-    return;
-  }
-}
-
 void setupServer() {
-  server.on("/",  HTTP_GET, redirectToVersion);
-  server.on("/api/version", HTTP_GET, sendVersion);
-  server.on("/api/file/list", HTTP_GET, listFiles);
-  server.on("/api/file/select", HTTP_GET, selectFile);
-  server.on("/api/file/delete", HTTP_GET, deleteFile);
-  server.on("/api/file/clear", HTTP_GET, clearStorage);
-  server.on("/api/file/upload", HTTP_POST, [](AsyncWebServerRequest *request){}, fileUpload);
-  server.on("/api/target/version", HTTP_GET, targetVersion);
-  server.on("/api/target/flash", HTTP_GET, flashTarget);
-  server.on("/api/target/restart", HTTP_GET, restartTarget);
-  server.on("/api/target/mode/flash", HTTP_GET, targetFlashMode);
-  server.on("/api/target/mode/run", HTTP_GET, targetRunMode);
-  server.on("/api/target/shutdown", HTTP_GET, shutdownTarget);
-  server.on("/api/target/startup", HTTP_GET, startupTarget);
-  server.addHandler(new AsyncCallbackJsonWebHandler("/api/target/send", sendJsonToTarget) );
-  // server.onRequestBody(onRequestBody);
-  server.onNotFound(routeNotFound);
-  server.begin();
+  server.on("/up", HTTP_GET, [](AsyncWebServerRequest *request) {
+
+      request->send(200, "text/html", makePage("Select file", serverIndex));
+    });
+    server.on("/list", HTTP_GET, handleListFiles);
+    server.on("/programm", HTTP_GET, handleFlash);
+    server.on("/run", HTTP_GET, [](AsyncWebServerRequest *request) {
+      String Runstate = "STM32 Restart and runing!<br><br> you can reflash MCU (click 1.FlashMode before return Home) <br><br> Or close Browser";
+      // stm32Run();
+      Serial.printf("%d\n", Runflag);
+      if (Runflag == 0) {
+        RunMode();
+        Runflag = 1;
+      }
+      else {
+        FlashMode();
+        //       initflag = 0;
+        Runflag = 0;
+      }
+      request->send(200, "text/html", makePage("Run", "<h2>" + Runstate + "<br><br><a style=\"color:white\" href=\"/run\">1.FlashMode </a><br><br><a style=\"color:white\" href=\"/\">2.Home </a></h2>"));
+    });
+    server.on("/erase", HTTP_GET, [](AsyncWebServerRequest *request) {
+      if (stm32Erase() == STM32ACK)
+        stringtmp = "<h1>Erase OK</h1><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>";
+      else if (stm32Erasen() == STM32ACK)
+        stringtmp = "<h1>Erase OK</h1><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>";
+      else
+        stringtmp = "<h1>Erase failure</h1><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>";
+      request->send(200, "text/html", makePage("Erase page", stringtmp));
+    });
+    server.on("/flash", HTTP_GET, [](AsyncWebServerRequest *request) {
+      stringtmp = "<h1>FLASH MENU</h1><h2><a style=\"color:white\" href=\"/programm\">Flash STM32</a><br><br><a style=\"color:white\" href=\"/erase\">Erase STM32</a><br><br><a style=\"color:white\" href=\"/run\">Run STM32</a><br><br><a style=\"color:white\" href=\"/list\">Return </a></h2>";
+      request->send(200, "text/html", makePage("Flash page", stringtmp));
+    });
+    server.on("/delete", HTTP_GET, handleFileDelete);
+    server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request){}, handleFileUpload);
+    // server.onFileUpload(handleFileUpload);
+    server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
+      request->send(200, "text/html", makePage("FileList", "<h1> Uploaded OK </h1><br><br><h2><a style=\"color:white\" href=\"/list\">Return </a></h2>"));
+    });
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+      if (Runflag == 1) {
+        FlashMode();
+        Runflag = 0;
+      }
+      //if (initflag == 0)
+      //{
+      Serial.write(STM32INIT);
+      delay(10);
+      if (Serial.available() > 0);
+      rdtmp = Serial.read();
+      if (rdtmp == STM32ACK)   {
+        //initflag = 1;
+        stringtmp = STM32_CHIPNAME[stm32GetId()];
+      }
+      else if (rdtmp == STM32NACK) {
+        Serial.write(STM32INIT);
+        delay(10);
+        if (Serial.available() > 0);
+        rdtmp = Serial.read();
+        if (rdtmp == STM32ACK)   {
+          //initflag = 1;
+          stringtmp = STM32_CHIPNAME[stm32GetId()];
+        }
+      }
+      else 
+        stringtmp = "ERROR";
+      //}
+      String starthtml = "<h1>STM32-OTA</h1><h2>Version 1.0 by <a style=\"color:white\" href=\"https://github.com/csnol/STM32-OTA\">CSNOL<br><br><a style=\"color:white\" href=\"/up\">Upload STM32 BinFile </a><br><br><a style=\"color:white\" href=\"/list\">List STM32 BinFile</a></h2>";
+      request->send(200, "text/html", makePage("Start Page", starthtml + "- Init MCU -<br> " + stringtmp));
+    });
+    server.begin();
 }
 
-void setupGPIO() {
-  pinMode(BOOT0, OUTPUT);
-  pinMode(BOOT1, OUTPUT);
+void setupGpio() {
   pinMode(NRST, OUTPUT);
-
+  pinMode(LED, OUTPUT);
+  pinMode(BOOT0, OUTPUT);
   delay(100);
   digitalWrite(BOOT0, HIGH);
-  digitalWrite(BOOT1, LOW);
   delay(100);
   digitalWrite(NRST, LOW);
+  digitalWrite(LED, LOW);
   delay(50);
   digitalWrite(NRST, HIGH);
   delay(500);
+  for ( int i = 0; i < 3; i++) {
+    digitalWrite(LED, !digitalRead(LED));
+    delay(100);
+  }
 }
 
 void setupFileSystem() {
@@ -359,22 +373,19 @@ void setupFileSystem() {
   }  
 }
 
-void setup() {
-  Serial.begin(SERIAL_BAUD, SERIAL_8E1);
-
+void setup(void)
+{
+  // SPIFFS.begin();
+  Serial.begin(115200, SERIAL_8E1);
   WiFi.mode(WIFI_MODE_STA);
   WiFi.config(ip, gateway, subnet);
-
   setupServer();
-  setupGPIO();
+  setupGpio();
   setupFileSystem();
-  // put your setup code here, to run once:
 }
 
-void loop() {
-  delay(1000);
+void loop(void) {
   if (WiFi.status() != WL_CONNECTED) {
     setupWifi();
   }
-  // put your main code here, to run repeatedly:
 }
