@@ -1,10 +1,4 @@
-#include <Arduino.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <SPIFFS.h>
-#include <AsyncJson.h>
-#include <ArduinoJson.h>
-#include "stm32ota.h"
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 
 #define CONSOLE 
 #define SERIAL_BAUD 115200 
@@ -19,6 +13,21 @@
 #define BOOT1 2
 #define TIMEOUT_MS 1000
 
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <SPIFFS.h>
+#include <AsyncJson.h>
+#include <ArduinoJson.h>
+#include "stm32ota.h"
+#include "esp_task_wdt.h"
+
+#include "esp_log.h"
+
+
+
+static const char* TAG = "SERVER";
+
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 IPAddress ip(192, 168, 178, IP);
@@ -30,6 +39,14 @@ File uploadFile;
 void activateFlashMode() {
   digitalWrite(BOOT0, HIGH);
   digitalWrite(BOOT1, LOW);
+}
+
+void shutdown() {
+  digitalWrite(NRST, LOW);
+}
+
+void startup(){
+  digitalWrite(NRST, HIGH);
 }
 
 String getFilenameFromRequestParams(AsyncWebServerRequest* request) {
@@ -64,22 +81,35 @@ String makePage(String title, String contents) {
   return s;
 }
 
-void setupWifi() {
-  uint8_t dotCount = 0;
-  wl_status_t status = WiFi.status();
-        WiFi.begin(ssid, password);
-  do {
-    delay(500);
-    for (uint8_t count = 0; count < dotCount; count++) {
-    }
+void runTarget() {
+  digitalWrite(BOOT0, LOW);
+  digitalWrite(BOOT1, HIGH);
+}
 
-    if (dotCount > 5) {
-      dotCount = 0;
-    } else {
-      dotCount++;
-    }
-    status = WiFi.status();
-  } while (status != WL_CONNECTED);
+void applyReset(){
+  digitalWrite(NRST, LOW);
+  delay(10);
+  digitalWrite(NRST, HIGH);
+}
+
+void connect() {
+  runTarget();
+  applyReset();
+  Serial.println("Disconnected");
+  WiFi.setSleep(false);// this code solves my problem
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    Serial.println("Connecting");
+  }
+  Serial.println("Connected");
+  activateFlashMode();
+  applyReset();
+}
+void setupWifi() {
+  // WiFi.setAutoConnect(true);
+  // WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid, password);
+  connect(); 
 }
 
 void redirectToVersion (AsyncWebServerRequest *request){
@@ -97,23 +127,12 @@ void targetVersion(AsyncWebServerRequest *request){
   request->send(200, "text/html", makePage("Firmware version", content));
 }
 
-void applyReset(){
-  digitalWrite(NRST, LOW);
-  delay(10);
-  digitalWrite(NRST, HIGH);
-}
 
 void restartTarget(AsyncWebServerRequest *request){
   applyReset();
   String content = "<h1>Target Reset</h1><h2>The target has been resetted.</h2>";
   request->send(200, "text/html", makePage("Target Reset", content));
 }
-
-void runTarget() {
-  digitalWrite(BOOT0, LOW);
-  digitalWrite(BOOT1, HIGH);
-}
-
 
 void targetRunMode(AsyncWebServerRequest *request){
   runTarget();
@@ -127,7 +146,7 @@ void targetFlashMode(AsyncWebServerRequest *request){
   // delay(100);
   // applyReset();
   // delay(500);
-  // Serial.write(STM32INIT);
+  // Serial2.write(STM32INIT);
   // // TODO find out chip name
   request->send(200);
 }
@@ -157,7 +176,7 @@ void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t i
     delay(1000);
     String content = "<h1>Upload Complete</h1><br>File size: " + String(uploadFile.size()) + "</br><h2><a style=\"color:white\" href=\"/api/file/select\">Return </a></h2>";
     request->send(200, "text/html", makePage("Upload complete", content));
-    Serial.println("Final - " + String(iteration) + " - " + String(size));
+    Serial2.println("Final - " + String(iteration) + " - " + String(size));
     return;
   }
 
@@ -179,7 +198,7 @@ void listFiles(AsyncWebServerRequest *request){
   {
     String FileName = file.name();
     String FileSize = String(file.size());
-    Serial.println("Size: " + FileSize);
+    Serial2.println("Size: " + FileSize);
     int whsp = 6 - FileSize.length();
     while (whsp-- > 0)
     {
@@ -188,7 +207,7 @@ void listFiles(AsyncWebServerRequest *request){
     FileList +=  "File: " + FileName + "   Size:" + FileSize + "\n";
     file = root.openNextFile();
   }
-  Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/up\">Upload BinFile</a></h2>";
+  Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/api/file/select\">Upload BinFile</a></h2>";
   request->send(200, "text/html", makePage("FileList", Listcode));
 }
 
@@ -200,8 +219,9 @@ void selectFile(AsyncWebServerRequest *request){
 bool awaitData() {
   unsigned long timestamp = millis();
   while(millis() - timestamp <= TIMEOUT_MS) {
-    if (Serial.available()) return true;
+    if (Serial2.available()) return true;
   }
+  Serial.println("Timeout");
   return false;
 }
 
@@ -210,27 +230,29 @@ bool awaitAck() {
     return false;
   }
 
-  return Serial.read() == STM32ACK;
+  char val = Serial2.read();
+  Serial.println("Received: " + String(val));
+  return val == STM32ACK;
 }
 
 
 bool activateUart() {
-  Serial.write(STM32INIT);
+  Serial2.write(STM32INIT);
   return awaitAck();
 }
 
 
 void flashTarget(AsyncWebServerRequest *request) {
   
-  while(Serial.available()) {
-    Serial.read();
+  while(Serial2.available()) {
+    Serial2.read();
   }
 
   activateFlashMode();
   applyReset();
   delay(1000);
   if (!activateUart()) {
-    Serial.println("UART not activated");
+    Serial2.println("UART not activated");
     request->send(500, "text/html", makePage("UART failed", "Failed to activate uart for flash"));
     return;
   }
@@ -247,66 +269,98 @@ void flashTarget(AsyncWebServerRequest *request) {
     return;
   }
 
+  Serial.println("File size:" + String(file.size()));
+
   uint8_t buffer[256];
   String flashwr;
   bool failure = false;
   unsigned int bufferIterations = file.size() / 256;
   unsigned int lastBufferSize = file.size() % 256;
-  
+  Serial.println("Iterations:" + String(bufferIterations) + " | " + String(lastBufferSize));
+  request->send(204, "text/html", makePage("Flashing started", "\nFilename: " + filename + "Iterations: " + String(bufferIterations) + "-" + String(lastBufferSize) + "<br>"));
   for (int iteration = 0; iteration < bufferIterations && !failure; iteration++) {
 
+    Serial.println("Iteration " + String(iteration));
     file.read(buffer, 256);
+    Serial.println("WR");
     stm32SendCommand(STM32WR);
     if (!awaitAck()) {
       failure = true;
       break;
     }
 
+    Serial.println("ADDR");
     stm32Address(STM32STADDR + (256 * iteration));
     if (!awaitAck()) {
-      Serial.println("Failure at adress");
       failure = true;
       break;
     }
 
+    Serial.println("DATA");
     // The argument is soooo wrong!!! It's length -1 to be expressed as char
     stm32SendData(buffer, 255);
     if (!awaitAck()) {
       failure = true;
       break;
     }
+    esp_task_wdt_reset();
   }
+
+  Serial.println("Iterations complete");
 
   if (failure) {
-    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK in iteration " + String(iteration) + " of " + String(bufferIterations)));
+    Serial.println("Failure");
     file.close();
     return;
   }
 
+  Serial.println("WR");
   stm32SendCommand(STM32WR); 
   if (!awaitAck()) {
-    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK in last iteration"));
+    Serial.println("Failure");
     file.close();
     return;
   }
 
+
   file.read(buffer, lastBufferSize);
+  Serial.println("ADDRESS");
   stm32Address(STM32STADDR + (256 * bufferIterations));
   if (!awaitAck()) {
+    Serial.println("Failure");
     request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK when waiting for adress in last iteration"));
     file.close();
     return;
   }
 
+  Serial.println("DATA");
   stm32SendData(buffer, lastBufferSize);
   if (!awaitAck()) {
+    Serial.println("Failure");
     request->send(500, "text/html", makePage("Flash failed", "Flash failed due to data of last iteration not confirmed"));
     file.close();
     return;
   }
 
+  Serial.println("Ready");
   file.close();
-  request->send(200, "text/html", makePage("Read complete", "\nFilename: " + filename + "Iterations: " + String(bufferIterations) + "-" + String(lastBufferSize) + "<br>"));
+  Serial.println("File closed");
+
+  delay(1000);
+
+  stm32SendCommand(STM32RUN);
+  if (!awaitAck()) {
+    return;
+  }
+
+  stm32Address(STM32STADDR);
+  if (!awaitAck()) {
+    //
+  }
+  // runTarget();
+  // applyReset();
+  return;
+
 }
 
 void deleteFile(AsyncWebServerRequest *request){
@@ -345,25 +399,20 @@ void routeNotFound(AsyncWebServerRequest *request){
   request->send(404, "text/html", makePage("Route not found", "404"));
 }
 
-void shutdown() {
-  digitalWrite(NRST, LOW);
-}
 
 void shutdownTarget(AsyncWebServerRequest *request) {
   shutdown();
   request->send(200);
 }
 
-void startup(){
-  digitalWrite(NRST, HIGH);
-}
+
 
 void startupTarget(AsyncWebServerRequest *request) {
   startup();
   request->send(200);
 }
 
-boolean sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
+void sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
   JsonObject requestBody = json.as<JsonObject>();
   if (!requestBody.containsKey("length") || !requestBody.containsKey("data")) {
     request->send(500, "text/html", makePage("Missing key", "Missing key"));
@@ -377,41 +426,12 @@ boolean sendJsonToTarget(AsyncWebServerRequest *request, JsonVariant &json) {
     bytes[index++] = (char) v.as<uint8_t>();
   } 
 
-  Serial.write(bytes, length);
-  while (!Serial.available());
-  request->send(Serial.read() == STM32ACK ? 204 : 500);
-  
-  
-  // char * p_Byte = dataArray.begin();
-  // for (uint8_t index = 0; index < length; index++) {
-    
-  // }
-  // Serial.printf("#### %d\n", length);
-  // serializeJson(requestBody["data"], Serial);
-  
-  // Serial.printf("####");
-  // serializeJson(bytes, Serial);
-  // // const std::vector<uint8_t> data = requestBody["data"].as<std::vector<uint8_t>>();
-}
-
-void sendToTarget(uint8_t *data, size_t len, size_t index, size_t total) {
-  // StaticJsonBuffer<50> JSONBuffer; 
-  // JsonObject& parsed = JSONBuffer.parseObject(data);
-
-  // if (!parsed.success()) {   //Check for errors in parsing
-  //   Serial.println("Parsing failed");
-  //   return;
-  // }
-  
-  // if(!index){
-  //   Serial.printf("BodyStart: %u B\n", total);
-  // }
-  // for(size_t i=0; i<len; i++){
-  //   Serial.write(data[i]);
-  // }
-  // if(index + len == total){
-  //   Serial.printf("BodyEnd: %u B\n", total);
-  // }
+  Serial2.write(bytes, length);
+  if (!awaitAck()) {
+    request->send(500);
+    return;
+  }
+  request->send(204); 
 }
 
 void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
@@ -419,6 +439,24 @@ void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, si
     request->send(200);
     return;
   }
+}
+
+void eraseTarget(AsyncWebServerRequest *request) {
+  stm32SendCommand(STM32ERASEN);
+  if (!awaitAck()) {
+    request->send(500);
+    return;
+  }
+
+  // Global erase
+  unsigned char globalErase[] = {0xFF, 0xFF};
+  stm32SendData(globalErase, 2);
+  if (!awaitAck()) {
+    request->send(500);
+    return;
+  }
+
+  request->send(200);
 }
 
 void setupServer() {
@@ -432,6 +470,7 @@ void setupServer() {
   }, fileUpload);
   server.on("/api/target/version", HTTP_GET, targetVersion);
   server.on("/api/target/flash", HTTP_GET, flashTarget);
+  server.on("/api/target/erase", HTTP_GET, eraseTarget);
   server.on("/api/target/restart", HTTP_GET, restartTarget);
   server.on("/api/target/mode/flash", HTTP_GET, targetFlashMode);
   server.on("/api/target/mode/run", HTTP_GET, targetRunMode);
@@ -464,22 +503,19 @@ void setupFileSystem() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD, SERIAL_8E1);
+  Serial2.begin(SERIAL_BAUD, SERIAL_8E1);
+  Serial.begin(SERIAL_BAUD);
 
   WiFi.mode(WIFI_MODE_STA);
-  WiFi.config(ip, gateway, subnet);
+  // WiFi.config(ip, gateway, subnet);
 
   setupServer();
   setupGPIO();
   setupFileSystem();
-  // put your setup code here, to run once:
 }
 
 void loop() {
-  delay(1000);
   if (WiFi.status() != WL_CONNECTED) {
-    shutdown();
-    setupWifi();
+    connect();
   }
-  // put your main code here, to run repeatedly:
 }
