@@ -63,7 +63,7 @@ unsigned char stm32Read(unsigned char * rdbuf, unsigned long rdaddress, unsigned
   return STM32ACK;
 }
 
-unsigned char stm32Address(unsigned long addr) {    // Tested
+void stm32Address(unsigned long addr) {    // Tested
   unsigned char sendaddr[4];
   unsigned char addcheck = 0;
   sendaddr[0] = addr >> 24;
@@ -75,18 +75,18 @@ unsigned char stm32Address(unsigned long addr) {    // Tested
     addcheck ^= sendaddr[i];
   }
   Serial.write(addcheck);
-  while (!Serial.available());
-  return Serial.read();
+  // while (!Serial.available());
+  // return Serial.read();
 }
 
-unsigned char stm32SendData(unsigned char * data, unsigned char wrlen) {     // Tested
+void stm32SendData(unsigned char * data, unsigned char wrlen) {     // Tested
   Serial.write(wrlen);
   for (int i = 0; i <= wrlen; i++) {
     Serial.write(data[i]);
   }
   Serial.write(getChecksum(data, wrlen));
-  while (!Serial.available());
-  return Serial.read();
+  // while (!Serial.available());
+  // return Serial.read();
 }
 
 char stm32Version() {     // Tested

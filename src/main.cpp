@@ -17,6 +17,7 @@
 #define NRST 5
 #define BOOT0 4
 #define BOOT1 2
+#define TIMEOUT_MS 1000
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -24,6 +25,7 @@ IPAddress ip(192, 168, 178, IP);
 IPAddress gateway(192, 168, 178, 1);
 IPAddress subnet(255,255,255,0);
 AsyncWebServer server(SERVER_PORT);
+File uploadFile;
 
 void activateFlashMode() {
   digitalWrite(BOOT0, HIGH);
@@ -130,21 +132,36 @@ void targetFlashMode(AsyncWebServerRequest *request){
   request->send(200);
 }
 
+int size = 0;
+int iteration = 0;
 void fileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){
+  if (!index) {
+    String localFileName = filename.startsWith("/") ? filename : "/" + filename;
+    uploadFile = SPIFFS.open(localFileName, FILE_WRITE); 
+  }
+
+  if (!uploadFile) {
+    request->send(404, "text/html", makePage("File not found", ""));
+    return;
+  }
+
+  Serial.println(String(index) +  " " + String(len));
+  size += len;
+  iteration++;
+
+  uploadFile.write(data, len);
+
   if (final) {
-    String content = "<h1>Upload Complete</h1><h2><a style=\"color:white\" href=\"/api/file/upload/select\">Return </a></h2>";
+    delay(1000);
+    uploadFile.close();
+    delay(1000);
+    String content = "<h1>Upload Complete</h1><br>File size: " + String(uploadFile.size()) + "</br><h2><a style=\"color:white\" href=\"/api/file/select\">Return </a></h2>";
     request->send(200, "text/html", makePage("Upload complete", content));
+    Serial.println("Final - " + String(iteration) + " - " + String(size));
     return;
   }
 
-  String localFileName = filename.startsWith("/") ? filename : "/" + filename;
-  File file = SPIFFS.open(localFileName, FILE_WRITE);
-  if (!file) {
-    return;
-  }
-
-  file.write(data, len);
-  file.close();
+  
 }
 
 void listFiles(AsyncWebServerRequest *request){
@@ -156,18 +173,19 @@ void listFiles(AsyncWebServerRequest *request){
     return;
   }
 
-  FileList += "<br><br> File: ";
+  FileList += "<br><br>\n";
   File file = root.openNextFile();
   while (file)
   {
     String FileName = file.name();
     String FileSize = String(file.size());
+    Serial.println("Size: " + FileSize);
     int whsp = 6 - FileSize.length();
     while (whsp-- > 0)
     {
       FileList += " ";
     }
-    FileList +=  FileName + "   Size:" + FileSize;
+    FileList +=  "File: " + FileName + "   Size:" + FileSize + "\n";
     file = root.openNextFile();
   }
   Listcode = "<h1>List STM32 BinFile</h1><h2>" + FileList + "<br><br><a style=\"color:white\" href=\"/flash\">Flash Menu</a><br><br><a style=\"color:white\" href=\"/delete\">Delete BinFile </a><br><br><a style=\"color:white\" href=\"/up\">Upload BinFile</a></h2>";
@@ -179,13 +197,44 @@ void selectFile(AsyncWebServerRequest *request){
   request->send(200, "text/html", makePage("Select file", content));
 }
 
-boolean activateUart() {
-  Serial.write(STM32INIT);
-  while(!Serial.available());
+bool awaitData() {
+  unsigned long timestamp = millis();
+  while(millis() - timestamp <= TIMEOUT_MS) {
+    if (Serial.available()) return true;
+  }
+  return false;
+}
+
+bool awaitAck() {
+  if (!awaitData()) {
+    return false;
+  }
+
   return Serial.read() == STM32ACK;
 }
 
-void flashTarget(AsyncWebServerRequest *request) { 
+
+bool activateUart() {
+  Serial.write(STM32INIT);
+  return awaitAck();
+}
+
+
+void flashTarget(AsyncWebServerRequest *request) {
+  
+  while(Serial.available()) {
+    Serial.read();
+  }
+
+  activateFlashMode();
+  applyReset();
+  delay(1000);
+  if (!activateUart()) {
+    Serial.println("UART not activated");
+    request->send(500, "text/html", makePage("UART failed", "Failed to activate uart for flash"));
+    return;
+  }
+
   String filename = getFilenameFromRequestParams(request);
   int filenameLength = filename.length() + 1;
   char filenameArray[filenameLength ];
@@ -198,138 +247,65 @@ void flashTarget(AsyncWebServerRequest *request) {
     return;
   }
 
-  while(Serial.available()) {
-    Serial.read();
-  }
-
-  activateFlashMode();
-  applyReset();
-  delay(1000);
-  if (!activateUart()) {
-    request->send(500, "text/html", makePage("UART failed", "Failed to activate uart for flash"));
-    // file.close();
-    return;
-  }
-
+  uint8_t buffer[256];
+  String flashwr;
+  bool failure = false;
+  unsigned int bufferIterations = file.size() / 256;
+  unsigned int lastBufferSize = file.size() % 256;
   
-  // Disable read protection
-  // stm32SendCommand(STM32UR);
-  // while(!Serial.available());
-  // if (Serial.read() != STM32ACK) {
-  //   request->send(500, "text/html", makePage("Read protection failed", "Disabling read protection failed"));
-  //   // file.close();
-  //   return;
-  // }
+  for (int iteration = 0; iteration < bufferIterations && !failure; iteration++) {
 
-  // String flashwr; 
-  // int size = file.size();
-  // int lastbuf = 0;
-  // uint8_t cflag, fnum = 0;
-  // uint8_t binread[256];
-  // int bini = size / 256;
-  // lastbuf = size % 256;
-
-  // flashwr = String(bini) + "-" + String(lastbuf) + "<br>";
-  //   for (int i = 0; i < bini; i++) {
-  //     file.read(binread, 256);
-  //     stm32SendCommand(STM32WR);
-  //     while (!Serial.available()) ;
-  //     cflag = Serial.read();
-  //     if (cflag == STM32ACK)
-  //       if (stm32Address(STM32STADDR + (256 * i)) == STM32ACK) {
-  //         if (stm32SendData(binread, 255) == STM32ACK)
-  //           flashwr += ".";
-  //         else flashwr = "Error";
-  //       }
-  //   }
-  //   file.read(binread, lastbuf);
-  //   stm32SendCommand(STM32WR);
-  //   while (!Serial.available()) ;
-  //   cflag = Serial.read();
-  //   if (cflag == STM32ACK)
-  //     if (stm32Address(STM32STADDR + (256 * bini)) == STM32ACK) {
-  //       if (stm32SendData(binread, lastbuf) == STM32ACK)
-  //         flashwr += "<br>Finished<br>";
-  //       else flashwr = "Error";
-  //     }
-  //   //flashwr += String(binread[0]) + "," + String(binread[lastbuf - 1]) + "<br>";
-
-// !!!
-  uint8_t cflag, fnum = 256;
-  uint8_t binread[256];
-  String FileName, flashwr;
-  boolean failure = false;
-  int bini = 0;
-  int lastbuf = 0;
-
-  bini = file.size() / 256;
-  lastbuf = file.size() % 256;
-
-  for (int i = 0; i < bini; i++) {
-    file.read(binread, 255);
+    file.read(buffer, 256);
     stm32SendCommand(STM32WR);
-    while (!Serial.available()) ;
-    cflag = Serial.read();
-    if (cflag == STM32ACK) {
-      cflag = stm32Address(STM32STADDR + (256 * i));
-      if (cflag == STM32ACK) {
-        cflag = stm32SendData(binread, 255);
-        if (cflag == STM32ACK) {
-          flashwr += ".";
-        } else if (cflag == STM32NACK) {
-          "\nReceived NACK in iteration" + String(i);
-          failure = true;
-          break;
-        }
-      } else if (cflag == STM32NACK) {
-        "\nReceived NACK in iteration" + String(i);
-        failure = true;
-        break;
-      }
-    } else if (cflag == STM32NACK) {
-      "\nReceived NACK in iteration" + String(i);
+    if (!awaitAck()) {
       failure = true;
       break;
     }
-  } 
+
+    stm32Address(STM32STADDR + (256 * iteration));
+    if (!awaitAck()) {
+      Serial.println("Failure at adress");
+      failure = true;
+      break;
+    }
+
+    stm32SendData(buffer, 256);
+    if (!awaitAck()) {
+      failure = true;
+      break;
+    }
+  }
 
   if (failure) {
-    flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
-    request->send(500, "text/html", makePage("Flash failed", flashwr));
+    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK in iteration " + String(iteration) + " of " + String(bufferIterations)));
     file.close();
     return;
   }
 
-  file.read(binread, lastbuf);
-  stm32SendCommand(STM32WR);
-  while (!Serial.available()) ;
-  cflag = Serial.read();
-  if (cflag == STM32ACK){
-    cflag = stm32Address(STM32STADDR + (256 * bini));
-    if (cflag == STM32ACK) {
-      if (stm32SendData(binread, lastbuf) == STM32ACK)
-        flashwr += "<br>Finished<br>";
-      else {
-        flashwr = "Error";
-        failure = true;
-      }
-    } else {
-      "\nReceived NACK in last iteration";
-      failure = true;
-    }
-  }
-
-  file.close();
-
-  if (failure) {
-    flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
-    request->send(500, "text/html", makePage("Flash failed", flashwr));
+  stm32SendCommand(STM32WR); 
+  if (!awaitAck()) {
+    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK in last iteration"));
+    file.close();
     return;
   }
 
-  flashwr += "\nFilename: " + filename + "Iterations: " + String(bini) + "-" + String(lastbuf) + "<br>";
-  request->send(200, "text/html", makePage("Read complete", flashwr));
-  // request->send(200);
+  file.read(buffer, lastBufferSize);
+  stm32Address(STM32STADDR + (256 * bufferIterations));
+  if (!awaitAck()) {
+    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to missing ACK when waiting for adress in last iteration"));
+    file.close();
+    return;
+  }
+
+  stm32SendData(buffer, lastBufferSize);
+  if (!awaitAck()) {
+    request->send(500, "text/html", makePage("Flash failed", "Flash failed due to data of last iteration not confirmed"));
+    file.close();
+    return;
+  }
+
+  file.close();
+  request->send(200, "text/html", makePage("Read complete", "\nFilename: " + filename + "Iterations: " + String(bufferIterations) + "-" + String(lastBufferSize) + "<br>"));
 }
 
 void deleteFile(AsyncWebServerRequest *request){
@@ -451,7 +427,8 @@ void setupServer() {
   server.on("/api/file/select", HTTP_GET, selectFile);
   server.on("/api/file/delete", HTTP_GET, deleteFile);
   server.on("/api/file/clear", HTTP_GET, clearStorage);
-  server.on("/api/file/upload", HTTP_POST, [](AsyncWebServerRequest *request){}, fileUpload);
+  server.on("/api/file/upload", HTTP_POST, [](AsyncWebServerRequest *request){
+  }, fileUpload);
   server.on("/api/target/version", HTTP_GET, targetVersion);
   server.on("/api/target/flash", HTTP_GET, flashTarget);
   server.on("/api/target/restart", HTTP_GET, restartTarget);
