@@ -218,23 +218,27 @@ void selectFile(AsyncWebServerRequest *request){
   request->send(200, "text/html", makePage("Select file", content));
 }
 
-bool awaitData() {
+bool awaitData(uint16_t timeout) {
   unsigned long timestamp = millis();
-  while(millis() - timestamp <= TIMEOUT_MS) {
+  while(millis() - timestamp <= timeout != 0 ? timeout : TIMEOUT_MS) {
     if (Serial2.available()) return true;
   }
   Serial.println("Timeout");
   return false;
 }
 
-bool awaitAck() {
-  if (!awaitData()) {
+bool awaitAck(uint16_t timeout) {
+  if (!awaitData(timeout)) {
     return false;
   }
 
   char val = Serial2.read();
-  Serial.println("Received: " + String(val));
+  Serial.println("Received: " + String((uint8_t) val));
   return val == STM32ACK;
+}
+
+bool awaitAck() {
+  return awaitAck(1000);
 }
 
 
@@ -445,14 +449,15 @@ void onRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, si
 
 void eraseTarget(AsyncWebServerRequest *request) {
   stm32SendCommand(STM32ERASEN);
-  if (!awaitAck()) {
+  if (!awaitAck(10000)) {
     request->send(500);
     return;
   }
 
-  // Global erase
-  unsigned char globalErase[] = {0xFF, 0xFF};
-  stm32SendData(globalErase, 2);
+  // Global erase UARTS 3.0+
+  Serial2.write(0xFF);
+  Serial2.write(0xFF);
+  Serial2.write(0x00); // Checksum of 0xFF ^ 0xFF
   if (!awaitAck()) {
     request->send(500);
     return;
