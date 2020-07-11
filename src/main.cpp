@@ -106,8 +106,10 @@ void connect() {
   applyReset();
 }
 void setupWifi() {
-  // WiFi.setAutoConnect(true);
-  // WiFi.setAutoReconnect(true);
+  WiFi.mode(WIFI_MODE_STA);
+  WiFi.config(ip, gateway, subnet);
+  WiFi.setAutoConnect(true);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(ssid, password);
   connect(); 
 }
@@ -503,12 +505,14 @@ void setupFileSystem() {
 }
 
 void setup() {
+  esp_log_level_set("*", ESP_LOG_ERROR);        // set all components to ERROR level
+  esp_log_level_set("wifi", ESP_LOG_WARN);      // enable WARN logs from WiFi stack
+  esp_log_level_set("dhcpc", ESP_LOG_INFO);     // enable INFO logs from DHCP client
+
   Serial2.begin(SERIAL_BAUD, SERIAL_8E1);
   Serial.begin(SERIAL_BAUD);
 
-  WiFi.mode(WIFI_MODE_STA);
-  // WiFi.config(ip, gateway, subnet);
-
+  setupWifi();
   setupServer();
   setupGPIO();
   setupFileSystem();
