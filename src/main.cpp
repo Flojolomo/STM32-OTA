@@ -269,7 +269,8 @@ void flashTarget(AsyncWebServerRequest *request) {
       break;
     }
 
-    stm32SendData(buffer, 256);
+    // The argument is soooo wrong!!! It's length -1 to be expressed as char
+    stm32SendData(buffer, 255);
     if (!awaitAck()) {
       failure = true;
       break;
