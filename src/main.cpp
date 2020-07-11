@@ -221,6 +221,7 @@ void selectFile(AsyncWebServerRequest *request){
 bool awaitData(uint16_t timeout) {
   unsigned long timestamp = millis();
   while(millis() - timestamp <= timeout != 0 ? timeout : TIMEOUT_MS) {
+    esp_task_wdt_reset();
     if (Serial2.available()) return true;
   }
   Serial.println("Timeout");
@@ -458,7 +459,7 @@ void eraseTarget(AsyncWebServerRequest *request) {
   Serial2.write(0xFF);
   Serial2.write(0xFF);
   Serial2.write(0x00); // Checksum of 0xFF ^ 0xFF
-  if (!awaitAck()) {
+  if (!awaitAck(10000)) {
     request->send(500);
     return;
   }
